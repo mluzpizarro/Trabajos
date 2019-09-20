@@ -1,0 +1,194 @@
+---
+title: "Estimación de las variables que mas impactan en la confianza del consumidor"
+output: html_notebook
+---
+
+*El objetivo de esta notebook es entender qué variables influyen en la determinación de la confianza del consumidor, que es un indicador de la predisposicion de los consumidores a gastar.
+Este indicador se basa en una encuesta a las personas sobre su situación personal, la situacion macroeconomica, y la posibilidad de compra de bienes durables e inmuebles.*
+mas información en este link [icc_utdt](https://www.utdt.edu/ver_contenido.php?id_contenido=2574&id_item_menu=4979)
+
+
+Primero corremos las librerias necesarias:
+```{r}
+library(readxl)
+library(corrplot)
+library(lubridate)
+```
+
+Importamos las variables de estudio:
+```{r}
+fileinput="C:\\ICC\\Confianza.xlsx"
+input=read_excel(fileinput, sheet="Hoja1",col_names = TRUE) #variables generales
+```
+
+**Descripcion de la variables incluidas en el dataset:**
+
+* ICC: Indice de Confianza del Consumidor
+
+* IGA: Indice General de Actividad (Orlando Ferreres), variable proxy del PBI
+
+* TC: Tipo de cambio (BCRA)
+
+* int_plazo_fijo: tasa de interes de depositos a plazo fijo en pesos
+
+* dep_dls: depositos de las personas en dólares
+
+* GP: Gasto Publico del Gobierno Nacional en terminos nominales
+
+* vtas_came: ventas minoristas (CAME) en cantidades
+
+* infl_esp_moda: moda de inflación esperada de encuesta de expectativas de inflación
+
+* infl_esp_promedio: promedio de inflación esperada de encuesta de expectativas de inflación
+
+* inflación_indice: indice de inflación INDEC
+
+* masa_sal_real: masa salarial de trabajadores del sector formal
+
+
+Hacemos una vista previa de los datos y un resumen estadístico:
+```{r}
+head(input)
+summary(input)
+```
+
+Tenemos faltantes en el último dato de algunos indicadores, por lo que acotamos la serie hasta el mes maximo al que llegan todas las series:
+```{r}
+input=input[!is.na(input$IGA),] #la variable IGA es la que suele tener mas demora de publicacion
+```
+
+Corremos coeficiente de correlacion lineal para entender la asociacion lineal entre las variables:
+```{r}
+correlacion=cor((input[,2:length(input)]))
+correlacion
+
+```
+
+1. En primer lugar vemos que las variables que más se relacionan con el ICC son el tipo de cambio (-0.59), la tasa de interes de los plazos fijos (-0.53), los depositos en dólares (-0.51), el gasto publico (-0.44), la inflación esperada promedio (0.72) y la inflación real del mes (-0.52). Todas con signo negativo, lo que implica que son variables que disminuyen la confianza del consumidor. En menor medida se relacionan de forma positiva la masa salarial y el PBI.
+
+2. Ahora se debe verificar si las features estan relacionadas entre si para seleccionar las más adecuadas para el modelo. Empezaremos con tipo de cambio que es la segunda en orden de importancia de acuerdo al coeficiente de correlacion:
+
+```{r}
+as.data.frame(correlacion[,3])
+```
+
+Como se ve la variable tipo de cambio esta muy relacionada con la tasa de interes de los plazos fijos, lo cual puede deberse porque en general a mayor tipo de cambio mayores son las tasas de interés de los plazos fijos para evitar corridas del peso hacia el dólar. Tipo de cambio tambien esta muy correlacionado con depositos en dólares, gasto publico e indice de inflación.
+
+Para intentar solucionar los problemas de correlacion entre features se haran transformaciones con el fin de contrarrestar el ruido de la inflación, deflactando algunas variables de manera de tenerlas en terminos reales.
+
+```{r}
+input2=input #hacemos una copia del dataset
+#transformamos las variables
+input2$int_plazo_fijo=input$int_plazo_fijo/input$inflacion_indice #transformamos la variable 
+input2$GP=input$GP/input$inflacion_indice
+input2$TC=input$TC/input$inflacion_indice
+input2$dep_dls=input$dep_dls*input$TC/input$inflacion_indice #los depositos en dolares los multiplicamos por el tipo de cambio y dividimos por inflación
+
+```
+
+Lo que acabamos de hacer para el caso del tipo de cambio implica que al deflactarlo se pueden detectar mejor los shocks cambiarios por devaluaciones muy por encima de la inflación:
+```{r}
+plot(scale(input$TC),type = "o",col = "red")
+lines(scale(input$inflacion_indice), type = "o",col = "blue")
+lines(scale(input2$TC), type = "o",col = "green")
+
+```
+En el gráfico vemos que la linea azul representa la inflacion desde 2013 hasta 2019, la linea roja la devaluacion y la linea verde el tipo de cambio deflactado, es decir la diferencia entre las anteriores. Se considera que fuertes variaciones en el TC por encima dela inflacion son las que realmente influyen en la confianza del consumidor.
+```{r}
+plot(scale(input$dep_dls),type = "o",col = "red")
+lines(scale(input2$dep_dls), type = "o",col = "green")
+
+```
+En el grafico anterior la linea de color rojo muestra la evolucion de los depositos en dolar expresados en u$s y la linea verde muestra la evolucion de estos mismos depositos llevados a pesos y deflactados por inflacion, de esta manera tenemos una idea de qué parte del dinero en pesos de las personas se destina a ahorrar en dolares en terminos reales.
+
+Ahora volvemos a calcular la matriz de correlaciones:
+```{r}
+correlacion2<-round(cor(input2[,2:length(input2)]), 1)
+corrplot(correlacion2, method="number", type="upper")
+```
+Una vez corregidas las variables podemos ver que las que mas se relacionan con ICC son tipo de cambio inflación esperada y depositos en dólares de manera negativa y de manera positiva gasto publico en mayor magnitud y en menor magnitud ventas minoristas PBI y  masa salarial.
+
+### Modelo de regresion lineal
+
+*Corremos primero el modelo de regresion lineal con las variables en terminos nominales (antes de dividir por la inflación)*
+
+```{r}
+regresion=lm(ICC~.-fecha-inflacion_indice-infl_esp_moda, data = input2 )
+summary(regresion)
+```
+Si bien la metrica R2 arroja un valor aceptable de 78,09% se observa signos de coeficientes erroneos desde el punto de vista economico, como por ejemplo es erroneo que a mayor tipo de cambio mayor confianza del consumidor, o que a mayor tasa de interes mayor ICC. Las variables con signo opuesto al esperado son: TC, tasa de interes, Gasto Publico, masa salarial
+
+*Ahora probamos con los datos transformados y corregidos por inflación:*
+
+```{r}
+regresion1=lm(ICC~.-fecha-inflacion_indice-infl_esp_moda, data = input )
+summary(regresion1)
+```
+
+En este caso mejora mucho el R2, pasa a **84,27%**, y las variables con signo opuesto al esperado son: TC y Gasto Publico, lo que implica una mejora significativa en el modelo.
+
+*Ahora convertimos las variables en logaritmo natural para ver si puede mejorar el modelo:*
+```{r}
+input3=log(input2[,2:length(input2)])
+regresion2=lm(ICC~.-inflacion_indice-infl_esp_moda, data = input3 )
+summary(regresion2)
+```
+En el modelo anterior el R2 empeora, pasa de 84,27% a 83,27%, y las variables con signo opuesto al esperado tambien son: TC y Gasto Publico. Dado el tratamiento de las variables los coeficientes del modelo de regresion en este caso son las elasticidades de cada una de las variables respecto a la confianza del consumidor.
+
+Dado que TC esta correlacionado con depositos en dolares eliminamos esta ultima variable y tambien eliminamos del modelo las variables masa_sal_real, IGA  e int_plazo_fijo porque son muy poco significativas dentro del modelo (t value menor a 2 en valor absoluto)
+
+```{r}
+input3=log(input2[,2:length(input2)])
+regresion3=lm(ICC~.-inflacion_indice-infl_esp_moda-masa_sal_real-IGA-int_plazo_fijo-dep_dls, data = input3 )
+summary(regresion3)
+```
+En el modelo anterior si bien empeora el R2 que paso a ser 64,5%, todas las variables tienen el signo esperado.
+
+*Ahora probaremos eliminar del modelo la variable TC e incorporar depositos en dolares de las personas (expresados en pesos)*
+
+```{r}
+input3=log(input2[,2:length(input2)])
+regresion3=lm(ICC~.-inflacion_indice-infl_esp_moda-masa_sal_real-IGA-int_plazo_fijo-TC, data = input3 )
+summary(regresion3)
+```
+
+Se obtiene un mejor R2 83,54% pero las variables GP y vtas came no son significativas y GP tiene un coeficiente con signo opuesto al esperado, por lo que volvemos a correr el modelo eliminando esas variables:
+
+```{r}
+input3=log(input2[,2:length(input2)])
+regresion4=lm(ICC~.-inflacion_indice-infl_esp_moda-masa_sal_real-IGA-int_plazo_fijo-TC-GP-vtas_came, data = input3 )
+summary(regresion4)
+```
+Finalmente el modelo obtenido no baja practicamente su R2 y se simplifica bastante al tener solo dos variables explicativas. Por lo cual consideramos a este como el mejor modelo.
+
+Ahora corremos de nuevo el que consideramos el mejor moddelo pero variabdo el año de inicio:
+```{r}
+#definimos la minima cantidad de años a considerar en el modelo
+fin=which(year(input$fecha)==2016)[1] #el periodo mas corto es desde 2016
+sec=seq(2,fin,by=12)
+
+for(i in sec )
+  {
+    regresion=lm(ICC~.-inflacion_indice-infl_esp_moda-IGA-int_plazo_fijo-TC-GP-masa_sal_real-vtas_came, data = input3[i:dim(input3)[1],] )
+    print(summary(regresion))
+
+  }
+```
+
+* De acuerdo a los resultados en todos los casos los coeficientes del modelo de regresion tienen el signo esperado y vemos que para el caso de entrenamiento del modelo desde el año 2016 se obtiene el mejor R2. Esto significa que en ese perio de tiempo las variables explicativas se ajustaron mejor para explicar variaciones de ICC.
+
+* Por otro lado los coeficientes representan elasticidades, por lo que por ejemplo en el caso del ultimo modelo el coeficiente -0.63 de la variable *infl_esp_promedio* significa que un aumento de un 1% de expectativas de inflacion futura generan una caida de 0.63 en el promedio del ICC.
+
+*Comparando predicciones con el valor real*
+
+```{r}
+pred=predict(regresion, input3[fin:dim(input3)[1],])
+plot(pred, type = "o",col = "red")
+lines(input3[fin:dim(input3)[1],1])
+
+```
+En el grafico anterior vemos la prediccion del modelo en color rojo y el real en color negro. Ajusta bastante bien.
+
+
+
+
