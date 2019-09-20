@@ -1,6 +1,8 @@
 ---
 title: "Estimación de las variables que mas impactan en la confianza del consumidor"
-output: html_notebook
+output:
+  html_document: default
+  html_notebook: default
 ---
 
 *El objetivo de esta notebook es entender qué variables influyen en la determinación de la confianza del consumidor, que es un indicador de la predisposicion de los consumidores a gastar.
